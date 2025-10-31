@@ -162,13 +162,19 @@ def popup_rain_heart(texts, colors, count=99, delay=0.03):
     if windows:
         last_window = windows[-1][0]
         try:
-            # 修改背景色为深粉色
-            last_window.configure(bg='#FF1493')
+            bg_color = '#2C3E50'  # 深蓝灰
+            text_color = '#FFB6C1'  # 淡粉色文字
+            blink_color = '#FF69B4'  # 亮粉色闪烁
+            button_bg = '#34495E'
+            button_hover = '#2C3E50'
+            # 修改背景色
+            last_window.configure(bg=bg_color)
             # 修改文本
             last_window.label.config(
                 text="我好想你",
                 font=("Arial", 20, "bold"),
-                bg='#FF1493'
+                bg=bg_color,
+                fg=text_color
             )
             last_window.title("💖")
 
@@ -176,7 +182,7 @@ def popup_rain_heart(texts, colors, count=99, delay=0.03):
             def blink(count=0):
                 if count < 8:
                     current_color = last_window.label.cget("fg")
-                    new_color = "#FFD700" if current_color == "white" else "white"
+                    new_color = blink_color if current_color == text_color else text_color
                     try:
                         last_window.label.config(fg=new_color)
                         last_window.after(400, lambda: blink(count + 1))
@@ -192,13 +198,13 @@ def popup_rain_heart(texts, colors, count=99, delay=0.03):
                     text="( ´◔ ‸◔`)",
                     command=close_all_windows,  # 修改为关闭所有窗口
                     font=("Arial", 9),
-                    bg='#FF1493',  # 使用与窗口相同的背景色
+                    bg=button_bg,  # 使用与窗口相同的背景色
                     fg='white',
                     relief=tk.FLAT,  # 扁平样式
                     bd=0,  # 无边框
                     padx=8,
                     pady=2,
-                    activebackground='#C71585',  # 鼠标悬停时的颜色
+                    activebackground=button_hover,  # 鼠标悬停时的颜色
                     activeforeground='white',
                     cursor='hand2'  # 手型鼠标指针
                 )

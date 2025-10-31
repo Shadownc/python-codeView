@@ -118,7 +118,7 @@ def popup_rain_heart(texts, colors, count=99, delay=0.03):
         x, y = positions[i]
 
         window = create_heart_popup(text, color, x, y)
-        windows.append((window, x, y))
+        windows.append(window)  # 只存储window对象
         root.update()
         time.sleep(delay)
 
@@ -130,9 +130,10 @@ def popup_rain_heart(texts, colors, count=99, delay=0.03):
     print("✨ 开始快速汇聚...")
 
     # 第二阶段:所有窗口同时向中心汇聚(加快速度)
-    for window, x, y in windows:
+    for i, window in enumerate(windows):
         try:
-            animate_to_center(window, x, y, target_x, target_y, duration=800)  # 从1500缩短到800毫秒
+            x, y = positions[i]
+            animate_to_center(window, x, y, target_x, target_y, duration=800)
         except:
             pass
 
@@ -147,11 +148,21 @@ def popup_rain_heart(texts, colors, count=99, delay=0.03):
     def close_all_windows():
         """关闭所有窗口并退出"""
         print("👋 关闭所有窗口...")
-        for window, _, _ in windows:
+        # 先隐藏所有窗口，避免视觉延迟
+        for window in windows:
+            try:
+                window.withdraw()  # 先隐藏窗口
+            except:
+                pass
+
+        # 然后销毁所有窗口
+        for window in windows:
             try:
                 window.destroy()
             except:
                 pass
+
+        # 最后退出主循环
         try:
             root.quit()
             root.destroy()
@@ -160,7 +171,7 @@ def popup_rain_heart(texts, colors, count=99, delay=0.03):
 
     # 修改最后一个窗口(最上层)的内容为"我好想你"
     if windows:
-        last_window = windows[-1][0]
+        last_window = windows[-1]
         try:
             bg_color = '#2C3E50'  # 深蓝灰
             text_color = '#FFB6C1'  # 淡粉色文字

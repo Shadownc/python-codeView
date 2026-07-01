@@ -1,0 +1,242 @@
+"""
+Dynamic heart particle animation — real-time tkinter + cv2.
+Particles spiral upward from the bottom like a vortex/tornado,
+then settle into a thick HOLLOW heart outline. Continuously rotating in place.
+"""
+
+import tkinter as tk
+import numpy as np
+import cv2
+from PIL import Image, ImageTk
+import time
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+RENDER_W, RENDER_H = 480, 360
+DISPLAY_SCALE = 2
+DISP_W, DISP_H = RENDER_W * DISPLAY_SCALE, RENDER_H * DISPLAY_SCALE
+
+N_PARTICLES = 1500
+TARGET_FPS = 30
+FRAME_MS = 30
+
+# Heart geometry
+HEART_SCALE = 10.0
+HEART_CX = RENDER_W // 2
+HEART_CY = RENDER_H // 2 - 5
+
+# Breathing
+BREATH_SPEED = 0.045
+BREATH_RANGE = 0.03
+
+# Colors BGR
+PALETTE = np.array([
+    [190, 110, 255],
+    [170,  85, 250],
+    [210, 150, 255],
+    [145,  65, 240],
+    [225, 200, 255],
+    [200, 130, 255],
+    [180, 100, 248],
+    [220, 175, 255],
+], dtype=np.float32)
+
+BG_COLOR = np.array([12, 8, 14], dtype=np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Heart outline — thick band of points along the contour
+# ---------------------------------------------------------------------------
+def heart_outline_points(n, scale, cx, cy):
+    """Sample n points on the heart outline with gaussian thickness."""
+    rng = np.random.default_rng(77)
+    t = rng.uniform(0, 2 * np.pi, n)
+    hx = 16.0 * np.sin(t) ** 3
+    hy = 13.0 * np.cos(t) - 5.0 * np.cos(2*t) - 2.0 * np.cos(3*t) - np.cos(4*t)
+
+    # Add gaussian scatter perpendicular to outline for thickness
+    px = cx + hx * scale + rng.normal(0, 6.0, n)
+    py = cy - hy * scale + rng.normal(0, 6.0, n)
+    return np.stack([px, py], axis=1).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Particle system — fully vectorized update, minimal per-particle draw cost
+# ---------------------------------------------------------------------------
+class ParticleSystem:
+    def __init__(self):
+        rng = np.random.default_rng(456)
+
+        # Target positions on thick heart outline
+        self.targets = heart_outline_points(N_PARTICLES, HEART_SCALE, HEART_CX, HEART_CY)
+
+        # All start from bottom center area
+        self.start_x = rng.uniform(RENDER_W * 0.35, RENDER_W * 0.65, N_PARTICLES).astype(np.float32)
+        self.start_y = np.full(N_PARTICLES, RENDER_H + 40, dtype=np.float32)
+
+        # Emit staggered over time
+        self.emit_time = rng.uniform(0.0, 3.0, N_PARTICLES).astype(np.float32)
+        self.travel_time = rng.uniform(2.8, 4.5, N_PARTICLES).astype(np.float32)
+
+        # Vortex/tornado spiral: angular speed + radius
+        self.vortex_speed = rng.uniform(4.0, 8.0, N_PARTICLES).astype(np.float32)
+        self.vortex_phase = rng.uniform(0, 2 * np.pi, N_PARTICLES).astype(np.float32)
+        # Vortex radius is large at bottom, shrinks as particle rises
+        self.vortex_radius = rng.uniform(50, 130, N_PARTICLES).astype(np.float32)
+
+        # Visual properties
+        color_idx = rng.integers(0, len(PALETTE), N_PARTICLES)
+        self.colors = PALETTE[color_idx]  # (N, 3) float32
+        self.streak_len = rng.uniform(5, 13, N_PARTICLES).astype(np.float32)
+        self.thickness = rng.choice([1, 1, 2, 2, 2, 3], size=N_PARTICLES)
+        self.brightness = rng.uniform(0.7, 1.2, N_PARTICLES).astype(np.float32)
+        self.phase = rng.uniform(0, 2 * np.pi, N_PARTICLES).astype(np.float32)
+        # Rotation speed for the streak angle (rad/s)
+        self.rot_speed = rng.uniform(-4.0, 4.0, N_PARTICLES).astype(np.float32)
+
+        self.t = 0.0
+        self.breath_phase = 0.0
+
+    def update_and_render(self, dt):
+        self.t += dt
+        self.breath_phase += BREATH_SPEED
+        t = self.t
+
+        # Breathing
+        breath = 1.0 + BREATH_RANGE * np.sin(self.breath_phase)
+        cx, cy = float(HEART_CX), float(HEART_CY)
+        tgt_x = cx + (self.targets[:, 0] - cx) * breath
+        tgt_y = cy + (self.targets[:, 1] - cy) * breath
+
+        # Progress
+        local_t = t - self.emit_time
+        active_mask = local_t > 0.0
+        progress = np.clip(local_t / self.travel_time, 0.0, 1.0)
+        # Ease out
+        p = 1.0 - (1.0 - progress) ** 3.0
+        arrived = progress >= 1.0
+
+        # --- Vortex spiral trajectory ---
+        # Linear interp from start to target
+        base_x = self.start_x + (tgt_x - self.start_x) * p
+        base_y = self.start_y + (tgt_y - self.start_y) * p
+
+        # Spiral offset: full at start, fades to zero at arrival
+        spiral_fade = (1.0 - p) ** 1.8
+        vortex_angle = local_t * self.vortex_speed + self.vortex_phase
+        offset_x = np.cos(vortex_angle) * self.vortex_radius * spiral_fade
+        offset_y = np.sin(vortex_angle) * self.vortex_radius * spiral_fade * 0.35
+
+        px = base_x + offset_x
+        py = base_y + offset_y
+
+        # After arrival: small wobble
+        wob_t = local_t - self.travel_time
+        wob_x = np.cos(wob_t * 1.3 + self.phase) * 1.0
+        wob_y = np.sin(wob_t * 1.6 + self.phase) * 1.2
+        px = np.where(arrived, tgt_x + wob_x, px)
+        py = np.where(arrived, tgt_y + wob_y, py)
+
+        # --- Render using cv2.line for streaks (fast) ---
+        # Use uint8 canvas with addWeighted for speed
+        canvas = np.zeros((RENDER_H, RENDER_W, 3), dtype=np.uint8)
+
+        # Streak direction based on rotation
+        angle_rad = t * self.rot_speed + self.phase
+        dx = np.cos(angle_rad) * self.streak_len * 0.5
+        dy = np.sin(angle_rad) * self.streak_len * 0.5
+
+        # For traveling particles, align streak with velocity direction
+        vel_x = tgt_x - self.start_x
+        vel_y = tgt_y - self.start_y
+        vel_len = np.sqrt(vel_x**2 + vel_y**2) + 1e-6
+        vel_dx = vel_x / vel_len * self.streak_len * 0.5
+        vel_dy = vel_y / vel_len * self.streak_len * 0.5
+
+        # Blend between velocity-aligned (traveling) and rotating (arrived)
+        blend = np.where(arrived, 0.0, 1.0 - p)
+        final_dx = dx * (1.0 - blend) + vel_dx * blend
+        final_dy = dy * (1.0 - blend) + vel_dy * blend
+
+        # Compute start/end points for lines
+        x1 = (px - final_dx).astype(np.int32)
+        y1 = (py - final_dy).astype(np.int32)
+        x2 = (px + final_dx).astype(np.int32)
+        y2 = (py + final_dy).astype(np.int32)
+
+        # Fade-in alpha
+        alpha = np.minimum(1.0, progress * 2.5) * self.brightness
+
+        # Draw active particles
+        idxs = np.where(active_mask)[0]
+        for i in idxs:
+            if x2[i] < -10 or x1[i] > RENDER_W + 10 or y2[i] < -10 or y1[i] > RENDER_H + 10:
+                continue
+            c = self.colors[i] * alpha[i]
+            cv2.line(canvas, (x1[i], y1[i]), (x2[i], y2[i]),
+                     (int(c[0]), int(c[1]), int(c[2])),
+                     int(self.thickness[i]), cv2.LINE_AA)
+
+        # Convert to float for bloom
+        canvas_f = canvas.astype(np.float32)
+
+        # Single bloom pass
+        bloom = cv2.GaussianBlur(canvas_f, (0, 0), sigmaX=7, sigmaY=7)
+        result = canvas_f + bloom * 0.6
+
+        # Add background
+        result += BG_COLOR
+
+        frame = np.clip(result, 0, 255).astype(np.uint8)
+        return frame
+
+
+# ---------------------------------------------------------------------------
+# Tkinter display
+# ---------------------------------------------------------------------------
+class App:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("♥")
+        self.root.configure(bg="black")
+        self.root.geometry(f"{DISP_W}x{DISP_H}")
+        self.root.resizable(False, False)
+
+        self.label = tk.Label(self.root, bg="black")
+        self.label.pack(fill=tk.BOTH, expand=True)
+
+        self.root.bind("<Escape>", lambda e: self.root.destroy())
+        self.root.bind("<q>", lambda e: self.root.destroy())
+
+        self.system = ParticleSystem()
+        self.last_time = time.perf_counter()
+        self.photo = None
+
+        self.root.after(10, self.loop)
+
+    def loop(self):
+        now = time.perf_counter()
+        dt = now - self.last_time
+        self.last_time = now
+        dt = min(dt, 0.06)
+
+        frame = self.system.update_and_render(dt)
+
+        # Upscale
+        display = cv2.resize(frame, (DISP_W, DISP_H), interpolation=cv2.INTER_LINEAR)
+        # BGR -> RGB
+        display = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+
+        img = Image.fromarray(display)
+        self.photo = ImageTk.PhotoImage(img)
+        self.label.configure(image=self.photo)
+
+        self.root.after(FRAME_MS, self.loop)
+
+    def run(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    App().run()
